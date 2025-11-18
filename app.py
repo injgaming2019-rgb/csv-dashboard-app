@@ -4,10 +4,11 @@ import requests
 from io import BytesIO
 from datetime import datetime
 from docx import Document
+from docx.shared import Inches
 import matplotlib.pyplot as plt
 
 # ----------------------------
-# Estilo
+# Configuração da página e estilo
 # ----------------------------
 st.set_page_config(page_title="CrowdStrike Dashboard", layout="wide")
 st.markdown("""
@@ -35,7 +36,7 @@ selected_key = [k for k, v in tenant_labels.items() if v == selected_company][0]
 tenant_cfg = tenants[selected_key]
 
 # ----------------------------
-# Funções API
+# Funções de API
 # ----------------------------
 def get_token(cfg):
     url = f"{cfg['base_url']}/oauth2/token"
@@ -83,21 +84,22 @@ def get_hosts_details(token, cfg, ids):
     return df
 
 # ----------------------------
-# Filtros Avançados
+# Filtros avançados
 # ----------------------------
 def aplicar_filtros(df):
     st.subheader("🎛️ Filtros Avançados")
-    filtro_map = {
+
+    filtros = {
         "Sistema Operacional": "os_version",
         "Plataforma": "platform_name",
         "Versão do Sensor": "agent_version",
-        "Política de Prevenção Aplicada": "policy_applied",
+        "Política Aplicada": "policy_applied",
         "Uninstall Protection": "tamper_protection_enabled",
         "RFM": "rfm_enabled",
         "Duplicada": "is_duplicate"
     }
 
-    for label, col in filtro_map.items():
+    for label, col in filtros.items():
         if col not in df.columns:
             continue
         df[col] = df[col].fillna("Desconhecido")
@@ -116,14 +118,15 @@ def aplicar_filtros(df):
     return df
 
 # ----------------------------
-# Função Word Executivo
+# Export Word Executivo
 # ----------------------------
-def export_word_executivo(df, tenant_name):
+def export_word(df, tenant_name):
     doc = Document()
     doc.add_heading(f'Relatório Executivo - {tenant_name}', 0)
     doc.add_paragraph(f'Data: {datetime.now().strftime("%d/%m/%Y %H:%M")}')
     doc.add_paragraph(f'Total Hosts: {len(df)}')
 
+    # KPIs
     doc.add_heading("Principais Indicadores", level=1)
     kpi_table = doc.add_table(rows=2, cols=4)
     kpi_table.style = 'Light Grid Accent 1'
@@ -136,25 +139,40 @@ def export_word_executivo(df, tenant_name):
     kpi_table.rows[1].cells[2].text = str(df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0)
     kpi_table.rows[1].cells[3].text = str(df['tamper_protection_enabled'].sum() if 'tamper_protection_enabled' in df else 0)
 
+    # Gráficos para Word (Barras)
+    for col in ['agent_version', 'os_version']:
+        if col in df.columns:
+            fig, ax = plt.subplots(figsize=(4,3))
+            counts = df[col].value_counts()
+            counts = counts[counts>max(1,int(len(df)*0.01))]
+            counts.plot(kind='bar', color='#d32f2f', ax=ax)
+            ax.set_title(f"{col}")
+            plt.tight_layout()
+            fig_path = f"{col}_plot.png"
+            plt.savefig(fig_path)
+            plt.close(fig)
+            doc.add_picture(fig_path, width=Inches(5))
+
     return doc
 
 # ----------------------------
-# Dashboard
+# Dashboard principal
 # ----------------------------
 st.subheader("🔍 Dashboard CrowdStrike")
+
 if st.button("Buscar Hosts do Tenant"):
     with st.spinner("Autenticando..."):
         token = get_token(tenant_cfg)
     if not token:
         st.stop()
 
-    with st.spinner("Buscando todos os IDs dos hosts..."):
+    with st.spinner("Buscando IDs dos hosts..."):
         ids = get_all_host_ids(token, tenant_cfg)
     if not ids:
         st.warning("Nenhum host encontrado.")
         st.stop()
 
-    with st.spinner("Buscando detalhes completos dos hosts..."):
+    with st.spinner("Buscando detalhes dos hosts..."):
         df = get_hosts_details(token, tenant_cfg, ids)
     if df.empty:
         st.warning("Nenhum host retornado.")
@@ -176,27 +194,27 @@ if st.button("Buscar Hosts do Tenant"):
 
     st.divider()
 
-    # Gráficos menores
-    st.subheader("📈 Gráficos")
+    # Gráficos
+    st.subheader("📈 Gráficos Interativos")
     for col in ["agent_version","os_version"]:
         if col in df.columns:
-            fig = plt.figure(figsize=(4,2))
+            fig = plt.figure(figsize=(4,3))
             counts = df[col].value_counts()
             counts = counts[counts>max(1,int(len(df)*0.01))]
             counts.plot(kind='bar', color='#d32f2f')
-            plt.title(f"Distribuição de {col}")
+            plt.title(f"{col}")
             st.pyplot(fig)
 
-    # Botão Word Executivo
+    # Exportar Word
     st.download_button(
         f"📥 Exportar Word Executivo - {selected_company}",
-        data=export_word_executivo(df, selected_company),
+        data=export_word(df, selected_company),
         file_name=f"{selected_company}_Relatorio_Executivo.docx",
         mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
 
 # ----------------------------
-# Upload CSV
+# Upload CSV externo
 # ----------------------------
 st.subheader("📤 Upload CSV Externo")
 uploaded_file = st.file_uploader("Envie seu CSV", type="csv")
@@ -209,7 +227,7 @@ if uploaded_file:
 
     st.subheader("📈 Gráficos CSV")
     for col in df_csv.select_dtypes(include="number").columns:
-        fig_csv = plt.figure(figsize=(4,2))
+        fig_csv = plt.figure(figsize=(4,3))
         df_csv[col].hist(color='#d32f2f')
-        plt.title(f"Distribuição de {col}")
+        plt.title(f"{col}")
         st.pyplot(fig_csv)
