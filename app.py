@@ -52,7 +52,8 @@ authenticator = stauth.Authenticate(
     cookie_expiry_days=1
 )
 
-name, authentication_status, username = authenticator.login("Login", "main")
+# ⚠️ Correção: location="main"
+name, authentication_status, username = authenticator.login("Login", location="main")
 if not authentication_status:
     st.stop()
 
@@ -148,19 +149,16 @@ if st.button("Buscar Hosts do Tenant"):
     st.subheader("🎛️ Filtros Avançados")
     filter1, filter2, filter3 = st.columns(3)
 
-    # Anti-Tamper toggle
     if "tamper_protection_enabled" in df.columns:
         choice = filter1.radio("Anti-Tamper", ["Todos", "Sim", "Não"], horizontal=True)
         if choice != "Todos":
             df = df[df["tamper_protection_enabled"] == (choice=="Sim")]
 
-    # RFM toggle
     if "rfm_enabled" in df.columns:
         choice = filter2.radio("RFM", ["Todos", "Sim", "Não"], horizontal=True)
         if choice != "Todos":
             df = df[df["rfm_enabled"] == (choice=="Sim")]
 
-    # Sistema Operacional
     if "os_version" in df.columns:
         so_list = ["Todos"] + sorted(df["os_version"].dropna().unique().tolist())
         choice = filter3.selectbox("SO", so_list)
@@ -218,7 +216,6 @@ if uploaded_file:
     st.write("### Dados Carregados")
     st.dataframe(df_csv, use_container_width=True)
 
-    # Filtros toggle para CSV
     st.subheader("🎛️ Filtros CSV")
     for col in df_csv.columns:
         if df_csv[col].dtype == bool or df_csv[col].nunique() <= 10:
@@ -248,4 +245,3 @@ if uploaded_file:
         return buffer
 
     st.download_button("📥 Exportar PDF CSV", data=export_pdf_csv(), file_name="dashboard_csv.pdf", mime="application/pdf")
-
