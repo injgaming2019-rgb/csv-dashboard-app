@@ -5,7 +5,6 @@ import plotly.express as px
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 from io import BytesIO
-import streamlit_authenticator as stauth
 
 # ----------------------------
 # ESTILO / CSS
@@ -29,33 +28,6 @@ h1, h2, h3, h4 {
 st.title("🛡️ CrowdStrike Executive Dashboard")
 st.write("Dashboard intuitivo com filtros, gráficos e exportação PDF.")
 st.divider()
-
-# ----------------------------
-# AUTENTICAÇÃO DEMO STREAMLIT
-# ----------------------------
-st.subheader("🔐 Login obrigatório (Demo Google/MFA)")
-
-credentials = {
-    "usernames": {
-        "demo_user": {
-            "name": "Demo User",
-            "email": "user@example.com",
-            "password": "123"  # demo, em produção usar hash
-        }
-    }
-}
-
-authenticator = stauth.Authenticate(
-    credentials,
-    "demo_cookie_name",
-    "demo_signature_key",
-    cookie_expiry_days=1
-)
-
-# ⚠️ Correção: location="main"
-name, authentication_status, username = authenticator.login("Login", location="main")
-if not authentication_status:
-    st.stop()
 
 # ----------------------------
 # CARREGAR TENANTS DO SECRETS
