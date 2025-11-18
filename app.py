@@ -26,7 +26,7 @@ h1, h2, h3, h4 {
 """, unsafe_allow_html=True)
 
 st.title("🛡️ CrowdStrike Executive Dashboard")
-st.write("Dashboard intuitivo com filtros, gráficos e exportação PDF.")
+st.write("Dashboard interativo com filtros, gráficos e exportação PDF estilo BI.")
 st.divider()
 
 # ----------------------------
@@ -55,17 +55,28 @@ def get_token(cfg):
         return None
     return response.json().get("access_token")
 
-def get_host_ids(token, cfg):
+def get_all_host_ids(token, cfg):
+    """Retorna todos os IDs de hosts usando paginação"""
     url = f"{cfg['base_url']}/devices/queries/devices/v1"
     headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(url, headers=headers)
-    if response.status_code != 200:
-        st.error(f"Erro ao buscar IDs: {response.text}")
-        return []
-    ids = response.json().get("resources", [])
-    return ids
+    all_ids = []
+    offset = 0
+    limit = 500
+    while True:
+        params = {"offset": offset, "limit": limit}
+        resp = requests.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            st.error(f"Erro ao buscar IDs: {resp.text}")
+            break
+        ids_batch = resp.json().get("resources", [])
+        if not ids_batch:
+            break
+        all_ids.extend(ids_batch)
+        offset += limit
+    return all_ids
 
 def get_hosts_details(token, cfg, ids):
+    """Busca detalhes de todos os hosts sem filtrar nada"""
     url = f"{cfg['base_url']}/devices/entities/devices/v2"
     headers = {"Authorization": f"Bearer {token}"}
     all_hosts = []
@@ -79,7 +90,6 @@ def get_hosts_details(token, cfg, ids):
     if not all_hosts:
         return pd.DataFrame()
     df = pd.json_normalize(all_hosts)
-    df = df[df["agent_version"].notnull()]  # apenas hosts com sensor
     return df
 
 # ----------------------------
@@ -91,12 +101,14 @@ if st.button("Buscar Hosts do Tenant"):
         token = get_token(tenant_cfg)
     if not token:
         st.stop()
-    with st.spinner("Buscando IDs dos hosts..."):
-        ids = get_host_ids(token, tenant_cfg)
+
+    with st.spinner("Buscando todos os IDs dos hosts..."):
+        ids = get_all_host_ids(token, tenant_cfg)
     if not ids:
         st.warning("Nenhum host encontrado.")
         st.stop()
-    with st.spinner("Buscando detalhes dos hosts..."):
+
+    with st.spinner("Buscando detalhes completos dos hosts..."):
         df = get_hosts_details(token, tenant_cfg, ids)
     if df.empty:
         st.warning("Nenhum host retornado.")
@@ -140,7 +152,7 @@ if st.button("Buscar Hosts do Tenant"):
     st.divider()
 
     # ----------------------------
-    # GRÁFICOS
+    # GRÁFICOS INTERATIVOS
     # ----------------------------
     st.subheader("📈 Gráficos")
     if "agent_version" in df:
@@ -151,7 +163,7 @@ if st.button("Buscar Hosts do Tenant"):
         st.plotly_chart(fig2, use_container_width=True)
 
     # ----------------------------
-    # TABELA E PDF
+    # TABELA E PDF BI
     # ----------------------------
     st.subheader("📄 Tabela")
     cols = st.multiselect("Colunas", df.columns.tolist(), default=df.columns.tolist())
@@ -160,21 +172,36 @@ if st.button("Buscar Hosts do Tenant"):
     def export_pdf():
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=letter)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(30, 750, f"Dashboard CrowdStrike - {selected_company}")
-        c.setFont("Helvetica", 10)
-        y = 700
+        width, height = letter
+
+        # Título e KPIs
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(30, height - 50, f"Dashboard CrowdStrike - {selected_company}")
+        c.setFont("Helvetica", 12)
+        c.drawString(30, height - 80, f"Total Hosts: {len(df)}")
+        c.drawString(200, height - 80, f"SOs: {df['os_version'].nunique() if 'os_version' in df else 0}")
+        c.drawString(350, height - 80, f"Versões Sensor: {df['agent_version'].nunique() if 'agent_version' in df else 0}")
+        c.drawString(520, height - 80, f"RFM Ativo: {df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0}")
+
+        y = height - 120
         for col in cols:
-            c.drawString(30, y, f"{col}: {df[col].tolist()[:10]}")
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(30, y, f"{col}")
             y -= 15
-            if y < 50:
-                c.showPage()
-                y = 750
+            c.setFont("Helvetica", 9)
+            for val in df[col].tolist()[:20]:
+                c.drawString(40, y, str(val))
+                y -= 12
+                if y < 50:
+                    c.showPage()
+                    y = height - 50
+            y -= 5
+
         c.save()
         buffer.seek(0)
         return buffer
 
-    st.download_button("📥 Exportar PDF", data=export_pdf(), file_name="dashboard.pdf", mime="application/pdf")
+    st.download_button("📥 Exportar PDF BI", data=export_pdf(), file_name="dashboard_bi.pdf", mime="application/pdf")
 
 st.divider()
 
@@ -202,18 +229,27 @@ if uploaded_file:
     def export_pdf_csv():
         buffer = BytesIO()
         c = canvas.Canvas(buffer, pagesize=letter)
-        c.setFont("Helvetica-Bold", 16)
-        c.drawString(30, 750, "Dashboard CSV Externo")
-        c.setFont("Helvetica", 10)
-        y = 700
+        width, height = letter
+
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(30, height - 50, "Dashboard CSV Externo")
+
+        y = height - 80
         for col in cols_csv:
-            c.drawString(30, y, f"{col}: {df_csv[col].tolist()[:10]}")
+            c.setFont("Helvetica-Bold", 10)
+            c.drawString(30, y, f"{col}")
             y -= 15
-            if y < 50:
-                c.showPage()
-                y = 750
+            c.setFont("Helvetica", 9)
+            for val in df_csv[col].tolist()[:20]:
+                c.drawString(40, y, str(val))
+                y -= 12
+                if y < 50:
+                    c.showPage()
+                    y = height - 50
+            y -= 5
+
         c.save()
         buffer.seek(0)
         return buffer
 
-    st.download_button("📥 Exportar PDF CSV", data=export_pdf_csv(), file_name="dashboard_csv.pdf", mime="application/pdf")
+    st.download_button("📥 Exportar PDF CSV", data=export_pdf_csv(), file_name="dashboard_csv_bi.pdf", mime="application/pdf")
