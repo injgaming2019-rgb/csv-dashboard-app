@@ -117,6 +117,30 @@ def aplicar_filtros(df):
     return df_copy
 
 # ----------------------------
+# Função para gráficos
+# ----------------------------
+def plot_with_others(df, col, kind="bar", width=4, height=3):
+    counts = df[col].value_counts()
+    threshold = max(1, int(len(df)*0.01))
+    counts_small = counts[counts < threshold]
+    counts_large = counts[counts >= threshold]
+    counts_final = pd.concat([counts_large, pd.Series({'Outros': counts_small.sum()})])
+    
+    fig, ax = plt.subplots(figsize=(width, height))
+    if kind == "bar":
+        counts_final.plot(kind="bar", color="#d32f2f", ax=ax)
+    elif kind == "pie":
+        counts_final.plot(kind="pie", autopct='%1.1f%%', ax=ax)
+    elif kind == "donut":
+        counts_final.plot(kind="pie", autopct='%1.1f%%', ax=ax)
+        ax.set(aspect="equal")
+        centre_circle = plt.Circle((0,0),0.70,fc='white')
+        fig.gca().add_artist(centre_circle)
+    ax.set_title(col)
+    plt.tight_layout()
+    return fig
+
+# ----------------------------
 # Export Word Executivo
 # ----------------------------
 def export_word(df, tenant_name):
@@ -141,16 +165,9 @@ def export_word(df, tenant_name):
     # Gráficos para Word
     for col in ['agent_version', 'os_version']:
         if col in df.columns:
-            fig, ax = plt.subplots(figsize=(4,3))
-            counts = df[col].value_counts()
-            counts_small = counts[counts < max(1, int(len(df)*0.01))]
-            counts_large = counts[counts >= max(1, int(len(df)*0.01))]
-            counts_final = counts_large.append(pd.Series({'Outros': counts_small.sum()}))
-            counts_final.plot(kind='bar', color='#d32f2f', ax=ax)
-            ax.set_title(f"{col}")
-            plt.tight_layout()
+            fig = plot_with_others(df, col, kind="bar", width=4, height=3)
             fig_path = f"{col}_plot.png"
-            plt.savefig(fig_path)
+            fig.savefig(fig_path)
             plt.close(fig)
             doc.add_picture(fig_path, width=Inches(5))
     return doc
@@ -197,13 +214,7 @@ if st.button("Buscar Hosts do Tenant"):
     st.subheader("📈 Gráficos Interativos")
     for col in ["agent_version","os_version"]:
         if col in df_filtered.columns:
-            fig = plt.figure(figsize=(4,3))
-            counts = df_filtered[col].value_counts()
-            counts_small = counts[counts < max(1, int(len(df_filtered)*0.01))]
-            counts_large = counts[counts >= max(1, int(len(df_filtered)*0.01))]
-            counts_final = counts_large.append(pd.Series({'Outros': counts_small.sum()}))
-            counts_final.plot(kind='bar', color='#d32f2f')
-            plt.title(f"{col}")
+            fig = plot_with_others(df_filtered, col, kind="bar", width=4, height=3)
             st.pyplot(fig)
 
     # Exportar Word
