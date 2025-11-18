@@ -4,7 +4,6 @@ import requests
 from io import BytesIO
 from datetime import datetime
 from docx import Document
-from docx.shared import Inches
 import matplotlib.pyplot as plt
 
 # ----------------------------
@@ -23,7 +22,7 @@ st.title("🛡️ CrowdStrike Dashboard")
 st.divider()
 
 # ----------------------------
-# Carregar tenants
+# Carregar tenants do secrets
 # ----------------------------
 if "tenants" not in st.secrets:
     st.error("Nenhum tenant configurado no secrets.toml.")
@@ -117,7 +116,7 @@ def aplicar_filtros(df):
     return df
 
 # ----------------------------
-# Export Word Executivo
+# Função Word Executivo
 # ----------------------------
 def export_word_executivo(df, tenant_name):
     doc = Document()
@@ -125,7 +124,6 @@ def export_word_executivo(df, tenant_name):
     doc.add_paragraph(f'Data: {datetime.now().strftime("%d/%m/%Y %H:%M")}')
     doc.add_paragraph(f'Total Hosts: {len(df)}')
 
-    # KPIs
     doc.add_heading("Principais Indicadores", level=1)
     kpi_table = doc.add_table(rows=2, cols=4)
     kpi_table.style = 'Light Grid Accent 1'
@@ -137,20 +135,6 @@ def export_word_executivo(df, tenant_name):
     kpi_table.rows[1].cells[1].text = str(df['agent_version'].nunique() if 'agent_version' in df else 0)
     kpi_table.rows[1].cells[2].text = str(df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0)
     kpi_table.rows[1].cells[3].text = str(df['tamper_protection_enabled'].sum() if 'tamper_protection_enabled' in df else 0)
-
-    # Gráficos para Word - barras, pizza, donut
-    for col in ['agent_version', 'os_version']:
-        if col in df.columns:
-            fig, ax = plt.subplots(figsize=(4,3))
-            counts = df[col].value_counts()
-            counts = counts[counts>max(1,int(len(df)*0.01))]  # valores pequenos -> Outros
-            counts.plot(kind='bar', color='#d32f2f', ax=ax)
-            ax.set_title(f"{col}")
-            plt.tight_layout()
-            fig_path = f"{col}_plot.png"
-            plt.savefig(fig_path)
-            plt.close(fig)
-            doc.add_picture(fig_path, width=Inches(5))
 
     return doc
 
@@ -164,13 +148,13 @@ if st.button("Buscar Hosts do Tenant"):
     if not token:
         st.stop()
 
-    with st.spinner("Buscando IDs dos hosts..."):
+    with st.spinner("Buscando todos os IDs dos hosts..."):
         ids = get_all_host_ids(token, tenant_cfg)
     if not ids:
         st.warning("Nenhum host encontrado.")
         st.stop()
 
-    with st.spinner("Buscando detalhes dos hosts..."):
+    with st.spinner("Buscando detalhes completos dos hosts..."):
         df = get_hosts_details(token, tenant_cfg, ids)
     if df.empty:
         st.warning("Nenhum host retornado.")
@@ -178,6 +162,7 @@ if st.button("Buscar Hosts do Tenant"):
 
     st.success(f"{len(df)} hosts carregados!")
 
+    # Aplicar filtros avançados
     df = aplicar_filtros(df)
 
     # KPIs
@@ -195,14 +180,14 @@ if st.button("Buscar Hosts do Tenant"):
     st.subheader("📈 Gráficos")
     for col in ["agent_version","os_version"]:
         if col in df.columns:
-            fig = plt.figure(figsize=(4,3))
+            fig = plt.figure(figsize=(4,2))
             counts = df[col].value_counts()
-            counts = counts[counts>max(1,int(len(df)*0.01))]  # valores pequenos -> Outros
+            counts = counts[counts>max(1,int(len(df)*0.01))]
             counts.plot(kind='bar', color='#d32f2f')
-            plt.title(f"{col}")
+            plt.title(f"Distribuição de {col}")
             st.pyplot(fig)
 
-    # Export Word
+    # Botão Word Executivo
     st.download_button(
         f"📥 Exportar Word Executivo - {selected_company}",
         data=export_word_executivo(df, selected_company),
@@ -211,7 +196,7 @@ if st.button("Buscar Hosts do Tenant"):
     )
 
 # ----------------------------
-# Upload CSV Externo
+# Upload CSV
 # ----------------------------
 st.subheader("📤 Upload CSV Externo")
 uploaded_file = st.file_uploader("Envie seu CSV", type="csv")
@@ -224,7 +209,7 @@ if uploaded_file:
 
     st.subheader("📈 Gráficos CSV")
     for col in df_csv.select_dtypes(include="number").columns:
-        fig_csv = plt.figure(figsize=(4,3))
+        fig_csv = plt.figure(figsize=(4,2))
         df_csv[col].hist(color='#d32f2f')
-        plt.title(f"{col}")
+        plt.title(f"Distribuição de {col}")
         st.pyplot(fig_csv)
