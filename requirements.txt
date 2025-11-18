@@ -1,4 +1,6 @@
 streamlit
 pandas
 requests
-urllib3
+plotly
+streamlit-authenticator
+reportlab
