@@ -89,6 +89,41 @@ def get_hosts_details(token, cfg, ids):
     return df
 
 # ----------------------------
+# FUNÇÃO DE FILTROS AVANÇADOS
+# ----------------------------
+def aplicar_filtros(df):
+    st.subheader("🎛️ Filtros Avançados")
+
+    filtro_map = {
+        "Sistema Operacional": "os_version",
+        "Plataforma": "platform_name",
+        "Versão do Sensor": "agent_version",
+        "Política de Prevenção Aplicada": "policy_applied",
+        "Uninstall Protection": "tamper_protection_enabled",
+        "RFM": "rfm_enabled",
+        "Duplicada": "is_duplicate"
+    }
+
+    for label, col in filtro_map.items():
+        if col not in df.columns:
+            continue
+        df[col] = df[col].fillna("Desconhecido")
+        # Booleans ou sim/não
+        if df[col].dtype == bool or set(df[col].unique()) <= {True, False}:
+            escolha = st.radio(label, ["Todos", "Sim", "Não"], horizontal=True)
+            if escolha == "Sim":
+                df = df[df[col] == True]
+            elif escolha == "Não":
+                df = df[df[col] == False]
+        else:
+            valores = ["Todos"] + sorted(df[col].astype(str).unique().tolist())
+            escolha = st.selectbox(label, valores)
+            if escolha != "Todos":
+                df = df[df[col].astype(str) == escolha]
+
+    return df
+
+# ----------------------------
 # FUNÇÃO PDF EXECUTIVO
 # ----------------------------
 def export_pdf_executivo(df, tenant_name):
@@ -116,11 +151,24 @@ def export_pdf_executivo(df, tenant_name):
     c.drawString(40, kpi_y, f"RFM Ativo: {df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0}")
     c.drawString(250, kpi_y, f"Proteção Anti-Desinstalação: {df['tamper_protection_enabled'].sum() if 'tamper_protection_enabled' in df else 0}")
 
-    # Gráficos com matplotlib
+    # Gráficos Matplotlib
     c.showPage()
-    fig, ax = plt.subplots(figsize=(6,4))
+    # Função auxiliar para agrupar valores pequenos como "Outros"
+    def agrupar_outros(ser, lim=0.03):
+        total = ser.sum()
+        threshold = total * lim
+        ser = ser.copy()
+        outros = ser[ser <= threshold].sum()
+        ser = ser[ser > threshold]
+        if outros>0:
+            ser["Outros"] = outros
+        return ser
+
+    # Gráfico Barra - Versão do Sensor
     if "agent_version" in df.columns:
         counts = df["agent_version"].value_counts()
+        counts = agrupar_outros(counts)
+        fig, ax = plt.subplots(figsize=(6,4))
         counts.plot(kind='bar', color='#d32f2f', ax=ax)
         ax.set_title("Distribuição por Versão do Sensor")
         plt.tight_layout()
@@ -130,11 +178,14 @@ def export_pdf_executivo(df, tenant_name):
         img = Image.open(fig_path)
         c.drawInlineImage(img, 50, height-450, width=500, height=350)
 
-    fig2, ax2 = plt.subplots(figsize=(6,4))
+    # Gráfico Donut - Sistema Operacional
     if "os_version" in df.columns:
         counts2 = df["os_version"].value_counts()
-        counts2.plot(kind='pie', autopct='%1.1f%%', ax=ax2, colors=plt.cm.Reds.colors)
-        ax2.set_ylabel("")
+        counts2 = agrupar_outros(counts2)
+        fig2, ax2 = plt.subplots(figsize=(6,4))
+        wedges, texts, autotexts = ax2.pie(counts2, labels=counts2.index, autopct='%1.1f%%', startangle=140)
+        centre_circle = plt.Circle((0,0),0.70,fc='white')
+        fig2.gca().add_artist(centre_circle)
         ax2.set_title("Distribuição por Sistema Operacional")
         plt.tight_layout()
         fig_path2 = "os_plot.png"
@@ -190,17 +241,8 @@ if st.button("Buscar Hosts do Tenant"):
 
     st.success(f"{len(df)} hosts carregados!")
 
-    # Filtros avançados baseados em todas as colunas
-    st.subheader("🎛️ Filtros Avançados")
-    for col in df.columns:
-        if df[col].dtype==bool or df[col].nunique()<=10:
-            choices = ["Todos"]+sorted(df[col].dropna().unique().tolist())
-            choice = st.radio(f"{col}", choices, horizontal=True)
-            if choice!="Todos": df = df[df[col]==choice]
-        elif df[col].dtype in ['object','category']:
-            choices = ["Todos"]+sorted(df[col].dropna().unique().tolist())
-            choice = st.selectbox(f"{col}", choices)
-            if choice!="Todos": df = df[df[col]==choice]
+    # Aplicar filtros avançados fixos
+    df = aplicar_filtros(df)
 
     # KPIs Cards
     st.subheader("📊 KPIs")
@@ -213,13 +255,16 @@ if st.button("Buscar Hosts do Tenant"):
 
     st.divider()
 
-    # Gráficos interativos
+    # Gráficos interativos - barras
     st.subheader("📈 Gráficos")
-    for col in df.select_dtypes(include="number").columns:
-        fig = plt.figure(figsize=(6,3))
-        df[col].hist(color='#d32f2f')
-        plt.title(f"Distribuição de {col}")
-        st.pyplot(fig)
+    for col in ["agent_version","os_version"]:
+        if col in df.columns:
+            fig = plt.figure(figsize=(6,3))
+            counts = df[col].value_counts()
+            counts = counts[counts>max(1,int(len(df)*0.01))]  # classifica valores muito pequenos como Outras
+            counts.plot(kind='bar', color='#d32f2f')
+            plt.title(f"Distribuição de {col}")
+            st.pyplot(fig)
 
     # Botão PDF Executivo
     st.download_button(
@@ -239,17 +284,8 @@ if uploaded_file:
     st.write("### Dados Carregados")
     st.dataframe(df_csv, use_container_width=True)
 
-    # Filtros CSV
-    st.subheader("🎛️ Filtros CSV")
-    for col in df_csv.columns:
-        if df_csv[col].dtype==bool or df_csv[col].nunique()<=10:
-            choices = ["Todos"]+sorted(df_csv[col].dropna().unique().tolist())
-            choice = st.radio(f"{col}", choices, horizontal=True)
-            if choice!="Todos": df_csv = df_csv[df_csv[col]==choice]
-        elif df_csv[col].dtype in ['object','category']:
-            choices = ["Todos"]+sorted(df_csv[col].dropna().unique().tolist())
-            choice = st.selectbox(f"{col}", choices)
-            if choice!="Todos": df_csv = df_csv[df_csv[col]==choice]
+    # Aplicar filtros CSV
+    df_csv = aplicar_filtros(df_csv)
 
     # Gráficos CSV
     st.subheader("📈 Gráficos CSV")
