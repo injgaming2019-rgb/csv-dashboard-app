@@ -2,20 +2,46 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.express as px
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from io import BytesIO
+import streamlit_authenticator as stauth
 
 # ----------------------------
-# CONFIGURAÇÃO DO APP
+# ESTILO / CSS
 # ----------------------------
 st.set_page_config(page_title="CrowdStrike Dashboard", layout="wide")
+st.markdown("""
+<style>
+body {
+    font-family: 'Roboto', sans-serif;
+    background-color: #f9f9f9;
+}
+h1, h2, h3, h4 {
+    color: #d32f2f;
+}
+.css-1aumxhk {
+    border-radius: 8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🛡️ CrowdStrike Executive Dashboard")
-st.write("Dashboard intuitivo para análise de hosts e upload de CSV externo.")
+st.write("Dashboard intuitivo com filtros, gráficos e exportação PDF.")
+
 st.divider()
 
 # ----------------------------
-# AUTENTICAÇÃO GOOGLE (placeholder)
+# AUTENTICAÇÃO GOOGLE DEMO
 # ----------------------------
-st.subheader("🔐 Login Opcional")
-st.info("Autenticação Google/MFA futura. Por enquanto acesso aberto.")
+st.subheader("🔐 Login obrigatório")
+# Demo OAuth placeholder: substitua por OAuth real em produção
+users = {"user@example.com": {"name": "Demo User", "password": "demo"}}
+authenticator = stauth.Authenticate(users, "demo_cookie_name", "demo_key", cookie_expiry_days=1)
+name, authentication_status, username = authenticator.login("Login", "main")
+
+if not authentication_status:
+    st.stop()
 
 # ----------------------------
 # CARREGAR TENANTS DO SECRETS
@@ -25,8 +51,7 @@ if "tenants" not in st.secrets:
     st.stop()
 
 tenants = st.secrets["tenants"]
-tenant_labels = {key: tenants[key]["company_name"] for key in tenants.keys()}
-
+tenant_labels = {k: tenants[k]["company_name"] for k in tenants.keys()}
 selected_company = st.selectbox("Selecione o Tenant", list(tenant_labels.values()))
 selected_key = [k for k, v in tenant_labels.items() if v == selected_company][0]
 tenant_cfg = tenants[selected_key]
@@ -51,7 +76,9 @@ def get_host_ids(token, cfg):
     if response.status_code != 200:
         st.error(f"Erro ao buscar IDs: {response.text}")
         return []
-    return response.json().get("resources", [])
+    ids = response.json().get("resources", [])
+    # Filtra apenas hosts com sensor instalado
+    return ids
 
 def get_hosts_details(token, cfg, ids):
     url = f"{cfg['base_url']}/devices/entities/devices/v2"
@@ -66,15 +93,17 @@ def get_hosts_details(token, cfg, ids):
         all_hosts.extend(resp.json().get("resources", []))
     if not all_hosts:
         return pd.DataFrame()
-    return pd.json_normalize(all_hosts)
+    df = pd.json_normalize(all_hosts)
+    # Filtro automático: apenas hosts com sensor
+    df = df[df["agent_version"].notnull()]
+    return df
 
 # ----------------------------
 # DASHBOARD CROWDSTRIKE
 # ----------------------------
 st.subheader("🔍 Dashboard CrowdStrike")
-
 if st.button("Buscar Hosts do Tenant"):
-    with st.spinner("Obtendo token..."):
+    with st.spinner("Autenticando..."):
         token = get_token(tenant_cfg)
     if not token:
         st.stop()
@@ -104,29 +133,27 @@ if st.button("Buscar Hosts do Tenant"):
     st.divider()
 
     # ----------------------------
-    # FILTROS AVANÇADOS
+    # FILTROS COMO TOGGLE
     # ----------------------------
     st.subheader("🎛️ Filtros Avançados")
     filter1, filter2, filter3 = st.columns(3)
 
-    # Anti-Tamper
+    # Anti-Tamper toggle
     if "tamper_protection_enabled" in df.columns:
-        opt = ["Todos", "Sim", "Não"]
-        choice = filter1.selectbox("Anti-Tamper", opt)
+        choice = filter1.radio("Anti-Tamper", ["Todos", "Sim", "Não"], horizontal=True)
         if choice != "Todos":
             df = df[df["tamper_protection_enabled"] == (choice=="Sim")]
 
-    # RFM
+    # RFM toggle
     if "rfm_enabled" in df.columns:
-        opt = ["Todos", "Sim", "Não"]
-        choice = filter2.selectbox("RFM", opt)
+        choice = filter2.radio("RFM", ["Todos", "Sim", "Não"], horizontal=True)
         if choice != "Todos":
             df = df[df["rfm_enabled"] == (choice=="Sim")]
 
     # Sistema Operacional
     if "os_version" in df.columns:
-        opt = ["Todos"] + sorted(df["os_version"].dropna().unique().tolist())
-        choice = filter3.selectbox("SO", opt)
+        so_list = ["Todos"] + sorted(df["os_version"].dropna().unique().tolist())
+        choice = filter3.selectbox("SO", so_list)
         if choice != "Todos":
             df = df[df["os_version"]==choice]
 
@@ -144,12 +171,30 @@ if st.button("Buscar Hosts do Tenant"):
         st.plotly_chart(fig2, use_container_width=True)
 
     # ----------------------------
-    # TABELA E DOWNLOAD
+    # TABELA E PDF
     # ----------------------------
     st.subheader("📄 Tabela")
     cols = st.multiselect("Colunas", df.columns.tolist(), default=df.columns.tolist())
     st.dataframe(df[cols], use_container_width=True)
-    st.download_button("📥 Baixar CSV", df.to_csv(index=False), "hosts_filtrados.csv", "text/csv")
+
+    def export_pdf():
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(30, 750, f"Dashboard CrowdStrike - {selected_company}")
+        c.setFont("Helvetica", 10)
+        y = 700
+        for col in cols:
+            c.drawString(30, y, f"{col}: {df[col].tolist()[:10]}")  # mostra primeiros 10 valores
+            y -= 15
+            if y < 50:
+                c.showPage()
+                y = 750
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    st.download_button("📥 Exportar PDF", data=export_pdf(), file_name="dashboard.pdf", mime="application/pdf")
 
 st.divider()
 
@@ -158,11 +203,40 @@ st.divider()
 # ----------------------------
 st.subheader("📤 Upload CSV Externo")
 uploaded_file = st.file_uploader("Envie seu CSV", type="csv")
-
 if uploaded_file:
     df_csv = pd.read_csv(uploaded_file)
     st.write("### Dados Carregados")
     st.dataframe(df_csv, use_container_width=True)
-    cols_csv = st.multiselect("Filtrar colunas", df_csv.columns.tolist(), default=df_csv.columns.tolist())
+
+    # Filtros toggle para CSV
+    st.subheader("🎛️ Filtros CSV")
+    filter_cols = df_csv.columns.tolist()
+    filter_toggles = {}
+    for col in filter_cols:
+        if df_csv[col].dtype == bool or df_csv[col].nunique() <= 10:
+            choices = ["Todos"] + sorted(df_csv[col].dropna().unique().tolist())
+            choice = st.radio(f"{col}", choices, horizontal=True)
+            if choice != "Todos":
+                df_csv = df_csv[df_csv[col]==choice]
+
+    cols_csv = st.multiselect("Colunas CSV", df_csv.columns.tolist(), default=df_csv.columns.tolist())
     st.dataframe(df_csv[cols_csv], use_container_width=True)
-    st.download_button("📥 Baixar CSV Filtrado", df_csv[cols_csv].to_csv(index=False), "csv_filtrado.csv", "text/csv")
+
+    def export_pdf_csv():
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        c.setFont("Helvetica-Bold", 16)
+        c.drawString(30, 750, "Dashboard CSV Externo")
+        c.setFont("Helvetica", 10)
+        y = 700
+        for col in cols_csv:
+            c.drawString(30, y, f"{col}: {df_csv[col].tolist()[:10]}")
+            y -= 15
+            if y < 50:
+                c.showPage()
+                y = 750
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    st.download_button("📥 Exportar PDF CSV", data=export_pdf_csv(), file_name="dashboard_csv.pdf", mime="application/pdf")
