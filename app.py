@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import requests
-import plotly.express as px
 from io import BytesIO
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
@@ -10,6 +9,7 @@ from reportlab.lib.units import inch
 from reportlab.platypus import Table, TableStyle
 from datetime import datetime
 from PIL import Image
+import matplotlib.pyplot as plt
 
 # ----------------------------
 # ESTILO / CSS
@@ -116,26 +116,37 @@ def export_pdf_executivo(df, tenant_name):
     c.drawString(40, kpi_y, f"RFM Ativo: {df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0}")
     c.drawString(250, kpi_y, f"Proteção Anti-Desinstalação: {df['tamper_protection_enabled'].sum() if 'tamper_protection_enabled' in df else 0}")
 
-    # Gráficos
+    # Gráficos com matplotlib
     c.showPage()
-    if "agent_version" in df:
-        fig1 = px.bar(df["agent_version"].value_counts(), title="Distribuição por Versão do Sensor", color_discrete_sequence=['#d32f2f'])
-        fig1_path = "temp_agent.png"
-        fig1.write_image(fig1_path, width=600, height=400)
-        img1 = Image.open(fig1_path)
-        c.drawInlineImage(img1, 50, height - 450, width=500, height=350)
+    fig, ax = plt.subplots(figsize=(6,4))
+    if "agent_version" in df.columns:
+        counts = df["agent_version"].value_counts()
+        counts.plot(kind='bar', color='#d32f2f', ax=ax)
+        ax.set_title("Distribuição por Versão do Sensor")
+        plt.tight_layout()
+        fig_path = "agent_plot.png"
+        plt.savefig(fig_path)
+        plt.close(fig)
+        img = Image.open(fig_path)
+        c.drawInlineImage(img, 50, height-450, width=500, height=350)
 
-    if "os_version" in df:
-        fig2 = px.pie(df, names="os_version", title="Distribuição por Sistema Operacional", color_discrete_sequence=px.colors.sequential.Reds)
-        fig2_path = "temp_os.png"
-        fig2.write_image(fig2_path, width=600, height=400)
-        img2 = Image.open(fig2_path)
-        c.drawInlineImage(img2, 50, height - 850, width=500, height=350)
+    fig2, ax2 = plt.subplots(figsize=(6,4))
+    if "os_version" in df.columns:
+        counts2 = df["os_version"].value_counts()
+        counts2.plot(kind='pie', autopct='%1.1f%%', ax=ax2, colors=plt.cm.Reds.colors)
+        ax2.set_ylabel("")
+        ax2.set_title("Distribuição por Sistema Operacional")
+        plt.tight_layout()
+        fig_path2 = "os_plot.png"
+        plt.savefig(fig_path2)
+        plt.close(fig2)
+        img2 = Image.open(fig_path2)
+        c.drawInlineImage(img2, 50, height-850, width=500, height=350)
 
-    # Tabela resumo
+    # Tabela resumo (Top 20)
     c.showPage()
     c.setFont("Helvetica-Bold", 16)
-    c.drawString(30, height - 50, "Resumo Hosts (Top 20)")
+    c.drawString(30, height-50, "Resumo Hosts (Top 20)")
     table_data = [df.columns.tolist()] + df.head(20).values.tolist()
     table = Table(table_data, colWidths=[1.5*inch]*len(df.columns))
     style = TableStyle([
@@ -149,14 +160,14 @@ def export_pdf_executivo(df, tenant_name):
     ])
     table.setStyle(style)
     table.wrapOn(c, width-60, height-100)
-    table.drawOn(c, 30, height - 400)
+    table.drawOn(c, 30, height-400)
 
     c.save()
     buffer.seek(0)
     return buffer
 
 # ----------------------------
-# DASHBOARD CROWDSTRIKE
+# DASHBOARD PRINCIPAL
 # ----------------------------
 st.subheader("🔍 Dashboard CrowdStrike")
 if st.button("Buscar Hosts do Tenant"):
@@ -179,45 +190,36 @@ if st.button("Buscar Hosts do Tenant"):
 
     st.success(f"{len(df)} hosts carregados!")
 
-    # KPI Cards
-    st.subheader("📊 KPIs")
-    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
-    kpi1.metric("Total Hosts", len(df))
-    kpi2.metric("Sistemas Operacionais", df["os_version"].nunique() if "os_version" in df else 0)
-    kpi3.metric("Versões do Sensor", df["agent_version"].nunique() if "agent_version" in df else 0)
-    kpi4.metric("RFM Ativo", df["rfm_enabled"].sum() if "rfm_enabled" in df else 0)
-    kpi5.metric("Proteção Anti-Desinstalação", df["tamper_protection_enabled"].sum() if "tamper_protection_enabled" in df else 0)
-
-    st.divider()
-
-    # Filtros Avançados
+    # Filtros avançados baseados em todas as colunas
     st.subheader("🎛️ Filtros Avançados")
-    col1, col2, col3, col4 = st.columns(4)
-    if "tamper_protection_enabled" in df.columns:
-        choice = col1.radio("Anti-Tamper", ["Todos","Sim","Não"], horizontal=True)
-        if choice != "Todos": df = df[df["tamper_protection_enabled"]==(choice=="Sim")]
-    if "rfm_enabled" in df.columns:
-        choice = col2.radio("RFM", ["Todos","Sim","Não"], horizontal=True)
-        if choice != "Todos": df = df[df["rfm_enabled"]==(choice=="Sim")]
-    if "os_version" in df.columns:
-        so_list = ["Todos"]+sorted(df["os_version"].dropna().unique().tolist())
-        choice = col3.selectbox("SO", so_list)
-        if choice!="Todos": df = df[df["os_version"]==choice]
-    if "agent_version" in df.columns:
-        agent_list = ["Todos"]+sorted(df["agent_version"].dropna().unique().tolist())
-        choice = col4.selectbox("Versão Sensor", agent_list)
-        if choice!="Todos": df = df[df["agent_version"]==choice]
+    for col in df.columns:
+        if df[col].dtype==bool or df[col].nunique()<=10:
+            choices = ["Todos"]+sorted(df[col].dropna().unique().tolist())
+            choice = st.radio(f"{col}", choices, horizontal=True)
+            if choice!="Todos": df = df[df[col]==choice]
+        elif df[col].dtype in ['object','category']:
+            choices = ["Todos"]+sorted(df[col].dropna().unique().tolist())
+            choice = st.selectbox(f"{col}", choices)
+            if choice!="Todos": df = df[df[col]==choice]
+
+    # KPIs Cards
+    st.subheader("📊 KPIs")
+    kpi_cols = st.columns(5)
+    kpi_cols[0].metric("Total Hosts", len(df))
+    kpi_cols[1].metric("Sistemas Operacionais", df["os_version"].nunique() if "os_version" in df else 0)
+    kpi_cols[2].metric("Versões do Sensor", df["agent_version"].nunique() if "agent_version" in df else 0)
+    kpi_cols[3].metric("RFM Ativo", df["rfm_enabled"].sum() if "rfm_enabled" in df else 0)
+    kpi_cols[4].metric("Proteção Anti-Desinstalação", df["tamper_protection_enabled"].sum() if "tamper_protection_enabled" in df else 0)
 
     st.divider()
 
-    # Gráficos
+    # Gráficos interativos
     st.subheader("📈 Gráficos")
-    if "agent_version" in df:
-        fig1 = px.bar(df["agent_version"].value_counts(), title="Distribuição por Versão do Sensor", color_discrete_sequence=['#d32f2f'])
-        st.plotly_chart(fig1, use_container_width=True)
-    if "os_version" in df:
-        fig2 = px.pie(df, names="os_version", title="Distribuição por Sistema Operacional", color_discrete_sequence=px.colors.sequential.Reds)
-        st.plotly_chart(fig2, use_container_width=True)
+    for col in df.select_dtypes(include="number").columns:
+        fig = plt.figure(figsize=(6,3))
+        df[col].hist(color='#d32f2f')
+        plt.title(f"Distribuição de {col}")
+        st.pyplot(fig)
 
     # Botão PDF Executivo
     st.download_button(
@@ -237,18 +239,25 @@ if uploaded_file:
     st.write("### Dados Carregados")
     st.dataframe(df_csv, use_container_width=True)
 
+    # Filtros CSV
     st.subheader("🎛️ Filtros CSV")
     for col in df_csv.columns:
         if df_csv[col].dtype==bool or df_csv[col].nunique()<=10:
             choices = ["Todos"]+sorted(df_csv[col].dropna().unique().tolist())
             choice = st.radio(f"{col}", choices, horizontal=True)
             if choice!="Todos": df_csv = df_csv[df_csv[col]==choice]
+        elif df_csv[col].dtype in ['object','category']:
+            choices = ["Todos"]+sorted(df_csv[col].dropna().unique().tolist())
+            choice = st.selectbox(f"{col}", choices)
+            if choice!="Todos": df_csv = df_csv[df_csv[col]==choice]
 
     # Gráficos CSV
     st.subheader("📈 Gráficos CSV")
     for col in df_csv.select_dtypes(include="number").columns:
-        fig_csv = px.histogram(df_csv, x=col, title=f"Distribuição de {col}", color_discrete_sequence=['#d32f2f'])
-        st.plotly_chart(fig_csv, use_container_width=True)
+        fig_csv = plt.figure(figsize=(6,3))
+        df_csv[col].hist(color='#d32f2f')
+        plt.title(f"Distribuição de {col}")
+        st.pyplot(fig_csv)
 
     # Export PDF CSV
     def export_pdf_csv():
