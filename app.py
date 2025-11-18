@@ -52,7 +52,7 @@ def get_device_ids(base_url, token):
 
     resp = session.get(url, headers=headers, timeout=20)
 
-    if resp.status_code != 200:
+   if response.status_code not in [200, 201]:
         raise Exception(f"Erro ao buscar IDs ({resp.status_code}): {resp.text}")
 
     return resp.json().get("resources", [])
