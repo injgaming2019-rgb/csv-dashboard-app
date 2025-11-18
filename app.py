@@ -1,25 +1,26 @@
 import streamlit as st
 import pandas as pd
 import requests
+import plotly.express as px
 
-# ---------------------------------
-# UI CONFIG
-# ---------------------------------
+# ---------------------------------------------------------
+# CONFIGURAÇÃO DO APP
+# ---------------------------------------------------------
 
 st.set_page_config(
-    page_title="CrowdStrike Dashboard",
+    page_title="CrowdStrike Executive Dashboard",
     page_icon="🛡️",
     layout="wide"
 )
 
 st.title("🛡️ CrowdStrike – Executive Dashboard")
-st.write("Ferramenta simples e intuitiva para consulta de hosts e análise de CSV.")
+st.write("Dashboard intuitivo para visualização de hosts, filtros avançados e análise gerencial.")
 
 st.divider()
 
-# ---------------------------------
+# ---------------------------------------------------------
 # CARREGAR TENANTS DO SECRETS
-# ---------------------------------
+# ---------------------------------------------------------
 
 if "tenants" not in st.secrets:
     st.error("Nenhum tenant configurado no secrets.toml.")
@@ -27,130 +28,124 @@ if "tenants" not in st.secrets:
 
 tenants = st.secrets["tenants"]
 
-tenant_keys = list(tenants.keys())
-tenant_display_names = {key: tenants[key]["company_name"] for key in tenant_keys}
+tenant_labels = {key: tenants[key]["company_name"] for key in tenants.keys()}
+selected_company = st.selectbox("Selecione o Tenant", list(tenant_labels.values()))
 
-selected_label = st.selectbox(
-    "Selecione o tenant",
-    options=list(tenant_display_names.values())
-)
+selected_key = [k for k, v in tenant_labels.items() if v == selected_company][0]
+tenant_cfg = tenants[selected_key]
 
-# Mapeia de volta para o tenant real
-selected_tenant_key = [
-    key for key, name in tenant_display_names.items() if name == selected_label
-][0]
-
-tenant_cfg = tenants[selected_tenant_key]
-
-# ---------------------------------
+# ---------------------------------------------------------
 # FUNÇÃO: OBTER TOKEN
-# ---------------------------------
+# ---------------------------------------------------------
 
-def get_token(tenant_config):
-    url = f"{tenant_config['base_url']}/oauth2/token"
+def get_token(cfg):
+    url = f"{cfg['base_url']}/oauth2/token"
     data = {
-        "client_id": tenant_config["client_id"],
-        "client_secret": tenant_config["client_secret"]
+        "client_id": cfg["client_id"],
+        "client_secret": cfg["client_secret"]
     }
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
 
     response = requests.post(url, data=data, headers=headers)
 
-    # Aceitar 200 ou 201
     if response.status_code not in [200, 201]:
-        st.error(f"Erro ao obter token ({response.status_code}): {response.text}")
         return None
 
     return response.json().get("access_token")
 
-# ---------------------------------
-# FUNÇÃO: OBTER HOSTS
-# ---------------------------------
+# ---------------------------------------------------------
+# FUNÇÃO: BUSCAR IDS (SCROLL)
+# ---------------------------------------------------------
 
-def get_hosts(token, tenant_config):
-    url = f"{tenant_config['base_url']}/devices/queries/devices-scroll/v1"
+def get_all_host_ids(token, cfg):
+    url = f"{cfg['base_url']}/devices/queries/devices-scroll/v1"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    ids = []
+    body = {}
+
+    while True:
+        response = requests.post(url, headers=headers, json=body)
+        if response.status_code != 200:
+            st.error(f"Erro ao buscar IDs: {response.text}")
+            return []
+
+        data = response.json()
+        ids.extend(data.get("resources", []))
+
+        # Verifica próxima página
+        scroll = data.get("meta", {}).get("pagination", {}).get("scroll")
+        if not scroll:
+            break
+
+        body = {"scroll": scroll}
+
+    return ids
+
+# ---------------------------------------------------------
+# FUNÇÃO: BUSCAR DETALHES DOS HOSTS
+# ---------------------------------------------------------
+
+def get_hosts_details(token, cfg, ids):
+    url = f"{cfg['base_url']}/devices/entities/devices/v2"
     headers = {"Authorization": f"Bearer {token}"}
 
-    response = requests.get(url, headers=headers)
+    # API aceita no máximo 500 IDs por requisição
+    batches = [ids[i:i+500] for i in range(0, len(ids), 500)]
+    all_hosts = []
 
-    if response.status_code != 200:
-        st.error(f"Erro ao obter hosts ({response.status_code}): {response.text}")
-        return None
+    for batch in batches:
+        response = requests.post(url, headers=headers, json={"ids": batch})
+        if response.status_code != 200:
+            st.error(f"Erro ao buscar detalhes: {response.text}")
+            return pd.DataFrame()
 
-    data = response.json()
-    host_ids = data.get("resources", [])
+        data = response.json().get("resources", [])
+        all_hosts.extend(data)
 
-    if not host_ids:
-        st.warning("Nenhum host encontrado.")
-        return pd.DataFrame()
+    df = pd.json_normalize(all_hosts)
+    return df
 
-    # Buscar detalhes
-    details_url = f"{tenant_config['base_url']}/devices/entities/devices/v2"
-    response = requests.post(details_url, headers=headers, json={"ids": host_ids})
+# ---------------------------------------------------------
+# BOTÃO DE BUSCAR HOSTS
+# ---------------------------------------------------------
 
-    if response.status_code != 200:
-        st.error("Erro ao buscar detalhes dos hosts.")
-        return pd.DataFrame()
+st.subheader("🔍 Consultar Hosts")
 
-    hosts_info = response.json().get("resources", [])
-    return pd.json_normalize(hosts_info)
-
-# ---------------------------------
-# BOTÃO PARA BUSCAR HOSTS
-# ---------------------------------
-
-st.subheader("🔍 Consultar Hosts do Tenant")
-
-if st.button("Buscar Hosts"):
-    with st.spinner("Obtendo token..."):
+if st.button("Buscar Hosts do Tenant"):
+    with st.spinner("Autenticando..."):
         token = get_token(tenant_cfg)
 
-    if token:
-        with st.spinner("Consultando hosts..."):
-            df_hosts = get_hosts(token, tenant_cfg)
+    if not token:
+        st.error("Erro ao obter token.")
+        st.stop()
 
-        if df_hosts is not None and not df_hosts.empty:
-            st.success("Dados carregados com sucesso!")
+    with st.spinner("Buscando hosts..."):
+        ids = get_all_host_ids(token, tenant_cfg)
+        df = get_hosts_details(token, tenant_cfg, ids)
 
-            # Filtros
-            st.subheader("🔎 Filtros")
-            columns = df_hosts.columns.tolist()
-            selected_columns = st.multiselect("Colunas a exibir", columns, default=columns)
+    if df.empty:
+        st.warning("Nenhum host encontrado.")
+        st.stop()
 
-            st.dataframe(df_hosts[selected_columns], use_container_width=True)
+    st.success("Hosts carregados com sucesso!")
 
-            st.download_button(
-                "📥 Download Hosts em CSV",
-                df_hosts.to_csv(index=False),
-                "hosts.csv",
-                "text/csv"
-            )
+    # ---------------------------------------------------------
+    # KPI CARDS
+    # ---------------------------------------------------------
+    st.subheader("📊 Indicadores Gerais")
 
-st.divider()
+    col1, col2, col3, col4 = st.columns(4)
 
-# ---------------------------------
-# UPLOAD CSV OPCIONAL
-# ---------------------------------
+    col1.metric("Total de Hosts", len(df))
+    col2.metric("Modelos únicos", df["machine_domain"].nunique() if "machine_domain" in df else 0)
+    col3.metric("Sistemas Operacionais", df["os_version"].nunique() if "os_version" in df else 0)
+    col4.metric("Versões do Sensor", df["agent_version"].nunique() if "agent_version" in df else 0)
 
-st.subheader("📤 Importar CSV para Dashboard")
+    st.divider()
 
-uploaded_file = st.file_uploader("Envie seu CSV", type="csv")
+    # ---------------------------------------------------------
+    # FILTROS AVANÇADOS (RFM, ANTI-TAMPER, SENSOR, ETC.)
+    # ---------------------------------------------------------
 
-if uploaded_file:
-    df_csv = pd.read_csv(uploaded_file)
-
-    st.write("### Dados Carregados")
-    st.dataframe(df_csv, use_container_width=True)
-
-    cols = df_csv.columns.tolist()
-    selected_cols_csv = st.multiselect("Filtrar colunas", cols, default=cols)
-
-    st.dataframe(df_csv[selected_cols_csv], use_container_width=True)
-
-    st.download_button(
-        "📥 Download CSV Filtrado",
-        df_csv[selected_cols_csv].to_csv(index=False),
-        "csv_filtrado.csv",
-        "text/csv"
-    )
-
+    st.subheader("🎛️ Filtros Avançados")
