@@ -21,7 +21,7 @@ h1, h2, h3, h4 {color: #d32f2f;}
 """, unsafe_allow_html=True)
 
 st.title("🛡️ CrowdStrike Dashboard")
-st.write("Dashboard interativo com filtros toggle, gráficos e exportação Word.")
+st.write("Em fase de testes")
 st.divider()
 
 # ----------------------------
