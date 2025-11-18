@@ -1,15 +1,102 @@
+import streamlit as st
+import pandas as pd
+import requests
+import plotly.express as px
+from io import BytesIO
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.platypus import Table, TableStyle
 from datetime import datetime
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from PIL import Image
 
+# ----------------------------
+# ESTILO / CSS
+# ----------------------------
+st.set_page_config(page_title="CrowdStrike Premium Dashboard", layout="wide")
+st.markdown("""
+<style>
+body {font-family: 'Roboto', sans-serif; background-color: #f9f9f9;}
+h1, h2, h3, h4 {color: #d32f2f;}
+.stButton>button {background-color: #d32f2f; color:white; border-radius:10px;}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🛡️ CrowdStrike Premium Dashboard")
+st.write("Dashboard interativo com KPIs, filtros toggle e exportação PDF estilo BI.")
+st.divider()
+
+# ----------------------------
+# CARREGAR TENANTS DO SECRETS
+# ----------------------------
+if "tenants" not in st.secrets:
+    st.error("Nenhum tenant configurado no secrets.toml.")
+    st.stop()
+
+tenants = st.secrets["tenants"]
+tenant_labels = {k: tenants[k]["company_name"] for k in tenants.keys()}
+selected_company = st.selectbox("Selecione o Tenant", list(tenant_labels.values()))
+selected_key = [k for k, v in tenant_labels.items() if v == selected_company][0]
+tenant_cfg = tenants[selected_key]
+
+# ----------------------------
+# FUNÇÕES DE API
+# ----------------------------
+def get_token(cfg):
+    url = f"{cfg['base_url']}/oauth2/token"
+    data = {"client_id": cfg["client_id"], "client_secret": cfg["client_secret"]}
+    headers = {"Content-Type": "application/x-www-form-urlencoded"}
+    response = requests.post(url, data=data, headers=headers)
+    if response.status_code not in [200, 201]:
+        st.error(f"Erro ao obter token ({response.status_code}): {response.text}")
+        return None
+    return response.json().get("access_token")
+
+def get_all_host_ids(token, cfg):
+    url = f"{cfg['base_url']}/devices/queries/devices/v1"
+    headers = {"Authorization": f"Bearer {token}"}
+    all_ids = []
+    offset = 0
+    limit = 500
+    while True:
+        params = {"offset": offset, "limit": limit}
+        resp = requests.get(url, headers=headers, params=params)
+        if resp.status_code != 200:
+            st.error(f"Erro ao buscar IDs: {resp.text}")
+            break
+        ids_batch = resp.json().get("resources", [])
+        if not ids_batch:
+            break
+        all_ids.extend(ids_batch)
+        offset += limit
+    return all_ids
+
+def get_hosts_details(token, cfg, ids):
+    url = f"{cfg['base_url']}/devices/entities/devices/v2"
+    headers = {"Authorization": f"Bearer {token}"}
+    all_hosts = []
+    for i in range(0, len(ids), 500):
+        batch = ids[i:i+500]
+        resp = requests.post(url, headers=headers, json={"ids": batch})
+        if resp.status_code != 200:
+            st.error(f"Erro ao buscar detalhes: {resp.text}")
+            continue
+        all_hosts.extend(resp.json().get("resources", []))
+    if not all_hosts:
+        return pd.DataFrame()
+    df = pd.json_normalize(all_hosts)
+    return df
+
+# ----------------------------
+# FUNÇÃO PDF EXECUTIVO
+# ----------------------------
 def export_pdf_executivo(df, tenant_name):
     buffer = BytesIO()
     c = canvas.Canvas(buffer, pagesize=letter)
     width, height = letter
 
-    # ----------------------------
     # Capa
-    # ----------------------------
     c.setFillColor(colors.HexColor("#d32f2f"))
     c.setFont("Helvetica-Bold", 24)
     c.drawString(30, height - 50, f"Relatório Executivo - {tenant_name}")
@@ -17,26 +104,20 @@ def export_pdf_executivo(df, tenant_name):
     c.setFillColor(colors.black)
     c.drawString(30, height - 80, f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
 
-    # ----------------------------
     # KPIs
-    # ----------------------------
     c.setFont("Helvetica-Bold", 14)
     c.drawString(30, height - 120, "Principais Indicadores")
     c.setFont("Helvetica", 12)
     kpi_y = height - 150
     c.drawString(40, kpi_y, f"Total Hosts: {len(df)}")
     c.drawString(200, kpi_y, f"Sistemas Operacionais: {df['os_version'].nunique() if 'os_version' in df else 0}")
-    c.drawString(450, kpi_y, f"Versões do Sensor: {df['agent_version'].nunique() if 'agent_version' in df else 0}")
+    c.drawString(400, kpi_y, f"Versões do Sensor: {df['agent_version'].nunique() if 'agent_version' in df else 0}")
     kpi_y -= 20
     c.drawString(40, kpi_y, f"RFM Ativo: {df['rfm_enabled'].sum() if 'rfm_enabled' in df else 0}")
     c.drawString(250, kpi_y, f"Proteção Anti-Desinstalação: {df['tamper_protection_enabled'].sum() if 'tamper_protection_enabled' in df else 0}")
 
-    # ----------------------------
     # Gráficos
-    # ----------------------------
-    c.showPage()  # Nova página para gráficos
-
-    # Gráfico 1 - Agent Version
+    c.showPage()
     if "agent_version" in df:
         fig1 = px.bar(df["agent_version"].value_counts(), title="Distribuição por Versão do Sensor", color_discrete_sequence=['#d32f2f'])
         fig1_path = "temp_agent.png"
@@ -44,7 +125,6 @@ def export_pdf_executivo(df, tenant_name):
         img1 = Image.open(fig1_path)
         c.drawInlineImage(img1, 50, height - 450, width=500, height=350)
 
-    # Gráfico 2 - OS Distribution
     if "os_version" in df:
         fig2 = px.pie(df, names="os_version", title="Distribuição por Sistema Operacional", color_discrete_sequence=px.colors.sequential.Reds)
         fig2_path = "temp_os.png"
@@ -52,14 +132,10 @@ def export_pdf_executivo(df, tenant_name):
         img2 = Image.open(fig2_path)
         c.drawInlineImage(img2, 50, height - 850, width=500, height=350)
 
-    c.showPage()  # Nova página para tabela resumo
-
-    # ----------------------------
-    # Tabela resumo (top 20 hosts)
-    # ----------------------------
+    # Tabela resumo
+    c.showPage()
     c.setFont("Helvetica-Bold", 16)
     c.drawString(30, height - 50, "Resumo Hosts (Top 20)")
-
     table_data = [df.columns.tolist()] + df.head(20).values.tolist()
     table = Table(table_data, colWidths=[1.5*inch]*len(df.columns))
     style = TableStyle([
@@ -72,10 +148,133 @@ def export_pdf_executivo(df, tenant_name):
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
     ])
     table.setStyle(style)
-
     table.wrapOn(c, width-60, height-100)
     table.drawOn(c, 30, height - 400)
 
     c.save()
     buffer.seek(0)
     return buffer
+
+# ----------------------------
+# DASHBOARD CROWDSTRIKE
+# ----------------------------
+st.subheader("🔍 Dashboard CrowdStrike")
+if st.button("Buscar Hosts do Tenant"):
+    with st.spinner("Autenticando..."):
+        token = get_token(tenant_cfg)
+    if not token:
+        st.stop()
+
+    with st.spinner("Buscando todos os IDs dos hosts..."):
+        ids = get_all_host_ids(token, tenant_cfg)
+    if not ids:
+        st.warning("Nenhum host encontrado.")
+        st.stop()
+
+    with st.spinner("Buscando detalhes completos dos hosts..."):
+        df = get_hosts_details(token, tenant_cfg, ids)
+    if df.empty:
+        st.warning("Nenhum host retornado.")
+        st.stop()
+
+    st.success(f"{len(df)} hosts carregados!")
+
+    # KPI Cards
+    st.subheader("📊 KPIs")
+    kpi1, kpi2, kpi3, kpi4, kpi5 = st.columns(5)
+    kpi1.metric("Total Hosts", len(df))
+    kpi2.metric("Sistemas Operacionais", df["os_version"].nunique() if "os_version" in df else 0)
+    kpi3.metric("Versões do Sensor", df["agent_version"].nunique() if "agent_version" in df else 0)
+    kpi4.metric("RFM Ativo", df["rfm_enabled"].sum() if "rfm_enabled" in df else 0)
+    kpi5.metric("Proteção Anti-Desinstalação", df["tamper_protection_enabled"].sum() if "tamper_protection_enabled" in df else 0)
+
+    st.divider()
+
+    # Filtros Avançados
+    st.subheader("🎛️ Filtros Avançados")
+    col1, col2, col3, col4 = st.columns(4)
+    if "tamper_protection_enabled" in df.columns:
+        choice = col1.radio("Anti-Tamper", ["Todos","Sim","Não"], horizontal=True)
+        if choice != "Todos": df = df[df["tamper_protection_enabled"]==(choice=="Sim")]
+    if "rfm_enabled" in df.columns:
+        choice = col2.radio("RFM", ["Todos","Sim","Não"], horizontal=True)
+        if choice != "Todos": df = df[df["rfm_enabled"]==(choice=="Sim")]
+    if "os_version" in df.columns:
+        so_list = ["Todos"]+sorted(df["os_version"].dropna().unique().tolist())
+        choice = col3.selectbox("SO", so_list)
+        if choice!="Todos": df = df[df["os_version"]==choice]
+    if "agent_version" in df.columns:
+        agent_list = ["Todos"]+sorted(df["agent_version"].dropna().unique().tolist())
+        choice = col4.selectbox("Versão Sensor", agent_list)
+        if choice!="Todos": df = df[df["agent_version"]==choice]
+
+    st.divider()
+
+    # Gráficos
+    st.subheader("📈 Gráficos")
+    if "agent_version" in df:
+        fig1 = px.bar(df["agent_version"].value_counts(), title="Distribuição por Versão do Sensor", color_discrete_sequence=['#d32f2f'])
+        st.plotly_chart(fig1, use_container_width=True)
+    if "os_version" in df:
+        fig2 = px.pie(df, names="os_version", title="Distribuição por Sistema Operacional", color_discrete_sequence=px.colors.sequential.Reds)
+        st.plotly_chart(fig2, use_container_width=True)
+
+    # Botão PDF Executivo
+    st.download_button(
+        f"📥 Exportar PDF Executivo - {selected_company}",
+        data=export_pdf_executivo(df, selected_company),
+        file_name=f"{selected_company}_Relatorio_Executivo.pdf",
+        mime="application/pdf"
+    )
+
+# ----------------------------
+# UPLOAD CSV EXTERNO
+# ----------------------------
+st.subheader("📤 Upload CSV Externo")
+uploaded_file = st.file_uploader("Envie seu CSV", type="csv")
+if uploaded_file:
+    df_csv = pd.read_csv(uploaded_file)
+    st.write("### Dados Carregados")
+    st.dataframe(df_csv, use_container_width=True)
+
+    st.subheader("🎛️ Filtros CSV")
+    for col in df_csv.columns:
+        if df_csv[col].dtype==bool or df_csv[col].nunique()<=10:
+            choices = ["Todos"]+sorted(df_csv[col].dropna().unique().tolist())
+            choice = st.radio(f"{col}", choices, horizontal=True)
+            if choice!="Todos": df_csv = df_csv[df_csv[col]==choice]
+
+    # Gráficos CSV
+    st.subheader("📈 Gráficos CSV")
+    for col in df_csv.select_dtypes(include="number").columns:
+        fig_csv = px.histogram(df_csv, x=col, title=f"Distribuição de {col}", color_discrete_sequence=['#d32f2f'])
+        st.plotly_chart(fig_csv, use_container_width=True)
+
+    # Export PDF CSV
+    def export_pdf_csv():
+        buffer = BytesIO()
+        c = canvas.Canvas(buffer, pagesize=letter)
+        width, height = letter
+        c.setFillColor(colors.HexColor("#d32f2f"))
+        c.setFont("Helvetica-Bold", 20)
+        c.drawString(30, height-50, f"Dashboard CSV Externo - {selected_company}")
+        y = height-90
+        for col in df_csv.columns:
+            c.setFont("Helvetica-Bold",10)
+            c.setFillColor(colors.black)
+            c.drawString(30, y, col)
+            y-=15
+            c.setFont("Helvetica",9)
+            for val in df_csv[col].tolist()[:20]:
+                c.drawString(35,y,str(val))
+                y-=12
+                if y<50:
+                    c.showPage()
+                    y = height-50
+            y-=5
+        c.save()
+        buffer.seek(0)
+        return buffer
+
+    st.download_button("📥 Exportar PDF CSV", data=export_pdf_csv(),
+                       file_name=f"{selected_company}_CSV_Dashboard.pdf", mime="application/pdf")
